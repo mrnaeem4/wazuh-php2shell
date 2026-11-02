@@ -33,6 +33,9 @@ wazuh_php2shell/
 │   ├── sca_php2shell_php_runtime.yml       # Hardening runtime PHP
 │   ├── sca_php2shell_web_server.yml        # Hardening web server & host
 │   └── sca_php2shell_docker_runtime.yml    # Variant untuk container Docker
+├── yara/
+│   ├── yara.sh                             # Script active response YARA (agent)
+│   └── php2shell_yara.xml                  # Decoder & rule integrasi YARA
 └── log_samples/                            # Contoh log untuk pengujian
 ```
 
@@ -47,6 +50,8 @@ wazuh_php2shell/
 | 111050-111051 | 12 | Segfault PHP worker, OOM killer |
 | 111052-111053 | 12 | Post-exploit: download payload & reverse shell via auditd |
 | 111054-111055 | 8-10 | FIM: file PHP baru/berubah di `/var/www` |
+| 111060-111062 | 0 | Pemicu scan YARA (level 0, tanpa alert) |
+| 108000-108001, 111070-111072 | 8-15 | Hasil scan YARA: signature malware/webshell |
 | 111100-111141 | 10-15 | Korelasi multiple event per source IP / host |
 | 100000-100008 | 0-14 | Normalisasi event ModSecurity (Nginx) |
 
@@ -283,6 +288,227 @@ Setelah `timeout` habis, `firewall-drop` menghapus blokir secara otomatis.
 - `modsecurity` mencakup rule level rendah (100002 level 5, 100006 level 6); pastikan threshold
   tidak memblokir pengguna sah akibat false positive (atur `rules_id` bila perlu).
 
+## Menyesuaikan Path Web Root
+
+Sebagian rule dan SCA policy **menghardcode** path web root umum (`/var/www`, `/srv/www`,
+`/usr/share/nginx/html`, `/usr/local/www`, `/opt/lampp/htdocs`). Jika instalasi Anda memakai path
+lain (mis. `/data/www`, `/home/site/public_html`, `/app/public`, atau web root di dalam container),
+lakukan penyesuaian berikut.
+
+### Tabel Lokasi yang Harus Diubah
+
+| File | Baris | Isi Saat Ini | Yang Perlu Diubah |
+| --- | --- | --- | --- |
+| `rules/111-php2shell_rules.xml` | 257 | `^/var/www/.+\.(?:php...)$` (rule 111054, FIM file baru) | Ganti `^/var/www/` dengan prefix web root Anda, mis. `^(?:/var/www\|/data/www)/` |
+| `rules/111-php2shell_rules.xml` | 268 | `^/var/www/.+\.(?:php...)$` (rule 111055, FIM file diubah) | Sama seperti di atas |
+| `rules/111-php2shell_rules.xml` | 50 | Regex 111004 mendeteksi path sesi di `/tmp` atau `/var/lib/php` | Tambahkan prefix direktori sesi Anda (`/run/php`, `/data/sessions`, dst.) |
+| `sca/sca_php2shell_web_server.yml` | 53 | `find /var/www /srv/www ...` (check 42102) | Tambahkan path web root Anda |
+| `sca/sca_php2shell_web_server.yml` | 77 | `find /var/lib/php/sessions ... /tmp` (check 42104) | Tambahkan direktori sesi (lihat `php -i \| grep session.save_path`) |
+| `sca/sca_php2shell_web_server.yml` | 107-111 | `d:/var/www`, `d:/srv/www`, ... (check 42106) | Tambahkan baris `d:<path>` untuk web root Anda |
+| `sca/sca_php2shell_php_runtime.yml` | 135 | Regex `(^|;)/(var/www\|usr/share/nginx\|srv/www\|opt/lampp/htdocs)` (check 42009) | Tambahkan alternasi path web root Anda |
+| `sca/sca_php2shell_docker_runtime.yml` | 182 | Regex yang sama dengan 42009 | Tambahkan alternasi path web root di dalam container |
+
+### Contoh Penyesuaian
+
+**Rule FIM** (default 2 path):
+
+```xml
+<field name="file" type="pcre2">(?i)^(?:/var/www|/data/www|/home/site/public_html)/.+\.(?:php[0-9]?|phtml|phar|pht|phps)$</field>
+```
+
+**SCA check 42102** (tambahkan path):
+
+```yaml
+c:find /var/www /srv/www /usr/share/nginx/html /usr/local/www /opt/lampp/htdocs /data/www -type f \( -name "*.php" -o -name "*.phtml" -o -name "*.php5" -o -name "*.pht" \) -perm -0002 -print -quit 2>/dev/null -> r:.
+```
+
+**SCA check 42106** (tambahkan satu baris per web root):
+
+```yaml
+- 'd:/data/www -> (^\.htaccess$|^\.user\.ini$) -> r:session\.upload_progress\.enabled\s*[= ]\s*(On|1|true)|auto_prepend_file\s*[= ]'
+```
+
+**FIM `<syscheck>` pada agent** juga harus menunjuk path yang sama:
+
+```xml
+<syscheck>
+  <directories check_all="yes" report_changes="yes">/data/www</directories>
+</syscheck>
+```
+
+### Cara Menemukan Web Root Sebenarnya
+
+```bash
+# Nginx
+grep -r "root " /etc/nginx/sites-enabled/ /etc/nginx/conf.d/
+
+# Apache
+grep -r "DocumentRoot" /etc/apache2/sites-enabled/ /etc/httpd/conf.d/
+
+# Docker
+docker inspect -f '{{.Name}} {{range .Mounts}}{{.Source}}->{{.Destination}} {{end}}' $(docker ps -q)
+
+# Session path aktual
+php -i | grep session.save_path
+```
+
+### Hal Lain yang Perlu Diperhatikan
+
+- **`log_samples/`** memakai `/var/www/html` sebagai contoh; tidak perlu diubah kecuali untuk pengujian.
+- **Nonaktifkan `syscheck` ignore** untuk direktori deploy/release baru, agar rule 111054 tidak
+  menghasilkan alert berlebih saat deployment.
+- **Path dengan karakter regex** (spasi, titik) harus di-escape atau diberi `\Q...\E` pada pola PCRE2.
+- **Container**: agent host biasanya hanya melihat path host (mis. `/srv/docker/app/html`), bukan
+  path di dalam container; gunakan `sca_php2shell_docker_runtime.yml` untuk membaca setting runtime.
+- Jika web root berada di luar `/var/www`, rule FIM harus diperbarui **dan** tetap konsisten dengan
+  `<directories>` pada `ossec.conf`; jika tidak, rule tidak akan pernah terpicu.
+
+## Integrasi YARA
+
+YARA dipakai untuk memverifikasi apakah file PHP baru/berubah di web root merupakan webshell atau
+malware. Alurnya mengikuti
+[Panduan Wazuh: Detecting malware using YARA integration](https://documentation.wazuh.com/current/proof-of-concept-guide/detect-malware-yara-integration.html):
+
+```
+FIM (rule 111054/111055) ──► Active Response `yara_linux` (yara.sh)
+                                      │  yara -w -r <rules> <file>
+                                      ▼
+                         /var/ossec/logs/active-responses.log
+                                      │
+                        decoder yara_decoder (manager)
+                                      ▼
+                     rule 108001 ─► 111070 (webshell di web root) / 111071
+```
+
+### File Terkait
+
+| File | Tujuan |
+| --- | --- |
+| `yara/yara.sh` | Script active response (instal ke agent), varian PHP2Shell dari `yara.sh` Wazuh |
+| `yara/php2shell_yara.xml` | Decoder `yara_decoder` + rule 111060-111072 dan contoh blok `<command>` |
+
+### Langkah 1: Instal YARA pada Endpoint (Agent)
+
+```bash
+# Ubuntu/Debian
+sudo apt update
+sudo apt install -y make gcc autoconf libtool libssl-dev pkg-config jq curl
+sudo curl -LO https://github.com/VirusTotal/yara/archive/v4.5.5.tar.gz
+sudo tar -xvzf v4.5.5.tar.gz -C /usr/local/bin/ && rm -f v4.5.5.tar.gz
+cd /usr/local/bin/yara-4.5.5/
+sudo ./bootstrap.sh && sudo ./configure && sudo make && sudo make install && sudo make check
+```
+
+Jika muncul `libyara.so.<n>: cannot open shared object file`:
+
+```bash
+echo "/usr/local/lib" | sudo tee -a /etc/ld.so.conf && sudo ldconfig
+```
+
+RHEL: ganti paket dengan `yum install -y make automake gcc autoconf libtool openssl-devel pkg-config jq`
+dan aktifkan `epel-release`.
+
+### Langkah 2: Unduh Ruleset YARA
+
+```bash
+sudo mkdir -p /tmp/yara/rules
+sudo curl 'https://valhalla.nextron-systems.com/api/v1/get' \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data 'demo=demo&apikey=1111111111111111111111111111111111111111111111111111111111111111&format=text' \
+  -o /tmp/yara/rules/yara_rules.yar
+```
+
+> `apikey` demo bersifat publik dan rate-limited. Untuk produksi gunakan ruleset milik sendiri,
+> misalnya aturan webshell PHP (`php2shell`, `webshell`, `c99`, `r57`, `b374k`) di direktori
+> `/tmp/yara/rules/` lalu arahkan `-yara_rules` ke file/direktori tersebut.
+>
+> Simpan ruleset di luar `/tmp` pada produksi, mis. `/var/ossec/etc/yara/rules.yar`, karena `/tmp`
+> bisa dibersihkan oleh `systemd-tmpfiles`.
+
+### Langkah 3: Pasang Script Active Response pada Agent
+
+```bash
+sudo cp yara/yara.sh /var/ossec/active-response/bin/yara.sh
+sudo chown root:wazuh /var/ossec/active-response/bin/yara.sh
+sudo chmod 750 /var/ossec/active-response/bin/yara.sh
+```
+
+### Langkah 4: Aktifkan FIM pada Web Root (Agent)
+
+`/var/ossec/etc/ossec.conf`:
+
+```xml
+<syscheck>
+  <directories realtime="yes" report_changes="yes">/var/www</directories>
+  <directories realtime="yes">/tmp/yara/malware</directories>
+</syscheck>
+```
+
+`/tmp/yara/malware` adalah direktori uji dari dokumentasi Wazuh. Sesuaikan `/var/www` dengan
+web root Anda (lihat bagian [Menyesuaikan Path Web Root](#menyesuaikan-path-web-root)).
+
+### Langkah 5: Deploy Decoder dan Rule YARA (Manager)
+
+Decoder `yara_decoder` dan rule `108000`/`108001` berada di `yara/php2shell_yara.xml`. Pisahkan
+sesuai jenisnya, atau salin ke file lokal manager:
+
+```bash
+# decoder -> /var/ossec/etc/decoders/php2shell_yara_decoders.xml
+# rules   -> /var/ossec/etc/rules/112-php2shell_yara_rules.xml
+sudo chown wazuh:wazuh /var/ossec/etc/decoders/php2shell_yara_decoders.xml \
+                       /var/ossec/etc/rules/112-php2shell_yara_rules.xml
+sudo chmod 660 /var/ossec/etc/decoders/php2shell_yara_decoders.xml \
+               /var/ossec/etc/rules/112-php2shell_yara_rules.xml
+```
+
+Rule kunci:
+
+| Rule ID | Level | Fungsi |
+| --- | --- | --- |
+| 111060 | 0 | FIM file PHP baru di web root, memicu scan (tanpa alert) |
+| 111061 | 0 | FIM file PHP diubah di web root, memicu scan (tanpa alert) |
+| 111062 | 0 | Event direktori uji `/tmp/yara/malware`, memicu scan |
+| 108000 | 0 | Grouping decoder YARA |
+| 108001 | 12 | YARA positif match (bawaan dokumentasi) |
+| 111070 | 14 | YARA positif match pada file di web root (indikasi webshell) |
+| 111071 | 8 | YARA positif match di luar web root |
+| 111072 | 15 | Korelasi 3+ match malware dalam 10 menit |
+
+> Rule 111060/111061 level `0` hanya memicu active response tanpa menghasilkan alert, karena
+> alert FIM sudah ditangani rule 111054/111055 (level 10/8). Jika ingin tanpa alert ganda, aktifkan
+> hanya salah satu pasangan pada `<rules_id>` active response.
+
+### Langkah 6: Konfigurasi Active Response (Manager)
+
+Tambahkan di dalam `<ossec_config>` pada `/var/ossec/etc/ossec.conf` manager:
+
+```xml
+<command>
+  <name>yara_linux</name>
+  <executable>yara.sh</executable>
+  <extra_args>-yara_path /usr/local/bin -yara_rules /tmp/yara/rules/yara_rules.yar</extra_args>
+  <timeout_allowed>no</timeout_allowed>
+</command>
+
+<active-response>
+  <disabled>no</disabled>
+  <command>yara_linux</command>
+  <location>local</location>
+  <rules_id>111054,111055,111060,111061,111062</rules_id>
+</active-response>
+```
+
+Untuk men-deploy ke banyak agent, letakkan blok `<active-response>` yang sama dalam
+`/var/ossec/etc/shared/<group>/agent.conf` di dalam `<agent_config>`.
+
+Restart service:
+
+```bash
+sudo systemctl restart wazuh-manager
+# pada agent
+sudo systemctl restart wazuh-agent
+```
+
 ## Troubleshooting
 
 | Gejala | Solusi |
@@ -293,6 +519,8 @@ Setelah `timeout` habis, `firewall-drop` menghapus blokir secara otomatis.
 | FIM tidak melapor | Pastikan `/var/www` ada di `<syscheck><directories>` |
 | SCA tidak muncul | Cek status di dashboard, pastikan policy berada di folder `shared` group agent |
 | Active response tidak memblokir | Cek `iptables` tersedia, agent berjalan sebagai root, dan `rules_group` tertulis benar |
+| YARA tidak memindai | Cek `jq` terpasang, `yara.sh` executable (`750 root:wazuh`), path `-yara_path`/`-yara_rules` benar, dan agent menerima konfigurasi active response terbaru |
+| `yara: error while loading shared libraries` | Tambahkan `/usr/local/lib` ke `/etc/ld.so.conf` lalu jalankan `ldconfig` |
 
 ## Lisensi
 
