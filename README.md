@@ -25,17 +25,18 @@ wazuh_php2shell/
 ├── decoders/
 │   ├── 0170-nginx_decoders.xml            # Decoder nginx error log + ModSecurity
 │   ├── 0375-web-accesslog_decoders.xml     # Decoder access log (dengan & tanpa params)
-│   └── php-fpm_decoders.xml                # Decoder log PHP-FPM warning
+│   ├── php-fpm_decoders.xml                # Decoder log PHP-FPM warning
+│   └── php2shell_yara_decoders.xml         # Decoder hasil scan YARA (wazuh-yara)
 ├── rules/
 │   ├── 100-modsec_custom_rules.xml         # Rule ModSecurity (id 100000-100008)
-│   └── 111-php2shell_rules.xml             # Rule utama PHP2Shell (id 111000-111141)
+│   ├── 111-php2shell_rules.xml             # Rule utama PHP2Shell (id 111000-111141)
+│   └── php2shell_yara.xml                  # Rule integrasi YARA (id 108000, 111060-111072)
 ├── sca/
 │   ├── sca_php2shell_php_runtime.yml       # Hardening runtime PHP
 │   ├── sca_php2shell_web_server.yml        # Hardening web server & host
 │   └── sca_php2shell_docker_runtime.yml    # Variant untuk container Docker
 ├── yara/
-│   ├── yara.sh                             # Script active response YARA (agent)
-│   └── php2shell_yara.xml                  # Decoder & rule integrasi YARA
+│   └── yara.sh                             # Script active response YARA (agent)
 └── log_samples/                            # Contoh log untuk pengujian
 ```
 
@@ -288,7 +289,7 @@ Setelah `timeout` habis, `firewall-drop` menghapus blokir secara otomatis.
 - `modsecurity` mencakup rule level rendah (100002 level 5, 100006 level 6); pastikan threshold
   tidak memblokir pengguna sah akibat false positive (atur `rules_id` bila perlu).
 
-## Menyesuaikan Path Web Root
+## Penyesuaian Path Web Root
 
 Sebagian rule dan SCA policy **menghardcode** path web root umum (`/var/www`, `/srv/www`,
 `/usr/share/nginx/html`, `/usr/local/www`, `/opt/lampp/htdocs`). Jika instalasi Anda memakai path
@@ -302,6 +303,11 @@ lakukan penyesuaian berikut.
 | `rules/111-php2shell_rules.xml` | 257 | `^/var/www/.+\.(?:php...)$` (rule 111054, FIM file baru) | Ganti `^/var/www/` dengan prefix web root Anda, mis. `^(?:/var/www\|/data/www)/` |
 | `rules/111-php2shell_rules.xml` | 268 | `^/var/www/.+\.(?:php...)$` (rule 111055, FIM file diubah) | Sama seperti di atas |
 | `rules/111-php2shell_rules.xml` | 50 | Regex 111004 mendeteksi path sesi di `/tmp` atau `/var/lib/php` | Tambahkan prefix direktori sesi Anda (`/run/php`, `/data/sessions`, dst.) |
+| `rules/php2shell_yara.xml` | 23 | Regex 111060 (pemicu scan YARA, file PHP baru) | Samakan daftar path dengan 111054 di atas |
+| `rules/php2shell_yara.xml` | 30 | Regex 111061 (pemicu scan YARA, file PHP diubah) | Samakan daftar path dengan 111055 di atas |
+| `rules/php2shell_yara.xml` | 64 | Regex 111070 (`yara_scanned_file` di web root) | Samakan daftar path agar match web root diklasifikasikan sebagai webshell, bukan 111071 |
+| `rules/php2shell_yara.xml` | 38 | `<field name="file">/tmp/yara/malware/</field>` (rule 111062, direktori uji) | Ganti bila direktori uji/karantina berbeda |
+| `rules/php2shell_yara.xml` | 103 | `-yara_rules /tmp/yara/rules/yara_rules.yar` pada contoh `<command>` | Ganti dengan path ruleset YARA di agent |
 | `sca/sca_php2shell_web_server.yml` | 53 | `find /var/www /srv/www ...` (check 42102) | Tambahkan path web root Anda |
 | `sca/sca_php2shell_web_server.yml` | 77 | `find /var/lib/php/sessions ... /tmp` (check 42104) | Tambahkan direktori sesi (lihat `php -i \| grep session.save_path`) |
 | `sca/sca_php2shell_web_server.yml` | 107-111 | `d:/var/www`, `d:/srv/www`, ... (check 42106) | Tambahkan baris `d:<path>` untuk web root Anda |
@@ -385,7 +391,8 @@ FIM (rule 111054/111055) ──► Active Response `yara_linux` (yara.sh)
 | File | Tujuan |
 | --- | --- |
 | `yara/yara.sh` | Script active response (instal ke agent), varian PHP2Shell dari `yara.sh` Wazuh |
-| `yara/php2shell_yara.xml` | Decoder `yara_decoder` + rule 111060-111072 dan contoh blok `<command>` |
+| `decoders/php2shell_yara_decoders.xml` | Decoder `yara_decoder` / `yara_decoder1` untuk baris `wazuh-yara:` |
+| `rules/php2shell_yara.xml` | Rule 108000/108001 dan 111060-111072, plus contoh blok `<command>`/`<active-response>` |
 
 ### Langkah 1: Instal YARA pada Endpoint (Agent)
 
@@ -449,17 +456,21 @@ web root Anda (lihat bagian [Menyesuaikan Path Web Root](#menyesuaikan-path-web-
 
 ### Langkah 5: Deploy Decoder dan Rule YARA (Manager)
 
-Decoder `yara_decoder` dan rule `108000`/`108001` berada di `yara/php2shell_yara.xml`. Pisahkan
-sesuai jenisnya, atau salin ke file lokal manager:
+Decoder berada di `decoders/php2shell_yara_decoders.xml` dan rule `108000`/`108001` serta
+`111060`-`111072` berada di `rules/php2shell_yara.xml`:
 
 ```bash
-# decoder -> /var/ossec/etc/decoders/php2shell_yara_decoders.xml
-# rules   -> /var/ossec/etc/rules/112-php2shell_yara_rules.xml
+sudo cp decoders/php2shell_yara_decoders.xml /var/ossec/etc/decoders/
+sudo cp rules/php2shell_yara.xml /var/ossec/etc/rules/112-php2shell_yara_rules.xml
 sudo chown wazuh:wazuh /var/ossec/etc/decoders/php2shell_yara_decoders.xml \
                        /var/ossec/etc/rules/112-php2shell_yara_rules.xml
 sudo chmod 660 /var/ossec/etc/decoders/php2shell_yara_decoders.xml \
                /var/ossec/etc/rules/112-php2shell_yara_rules.xml
 ```
+
+> Nama file rule di manager bebas, tetapi harus diakhiri `.xml` dan tidak boleh sama dengan file
+> di repo (`php2shell_yara.xml` juga valid). Nama `112-...` dipakai agar urutan muat setelah
+> `111-php2shell_rules.xml`.
 
 Rule kunci:
 

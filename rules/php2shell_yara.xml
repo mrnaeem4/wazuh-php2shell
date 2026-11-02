@@ -1,26 +1,17 @@
 <!--
-  Integrasi YARA untuk PHP2Shell.
+  Integrasi YARA untuk PHP2Shell. File ini berisi rule saja; decoder berada di
+  decoders/php2shell_yara_decoders.xml.
+
   Konsep: FIM mendeteksi file PHP baru/berubah di web root (rule 111054/111055),
   lalu active response `yara_linux` menjalankan yara.sh untuk memindai file tersebut.
   Hasil pemindaian masuk ke active-responses.log, dibaca decoder `yara_decoder`
   dan dipicu rule 108001.
 
   Deploy:
-    - decoders  -> /var/ossec/etc/decoders/ (Wazuh manager)
-    - rules     -> /var/ossec/etc/rules/    (Wazuh manager)
+    - decoders  -> /var/ossec/etc/decoders/php2shell_yara_decoders.xml
+    - rules     -> /var/ossec/etc/rules/   (file ini)
     - command   -> blok <command> di /var/ossec/etc/ossec.conf (Wazuh manager)
 -->
-
-<!-- ===================== Decoders (manager) ===================== -->
-<decoder name="yara_decoder">
-  <prematch>wazuh-yara:</prematch>
-</decoder>
-
-<decoder name="yara_decoder1">
-  <parent>yara_decoder</parent>
-  <regex>wazuh-yara: (\S+) \- Scan result: (\S+) (\S+)</regex>
-  <order>log_type, yara_rule, yara_scanned_file</order>
-</decoder>
 
 <!-- ===================== Rules (manager) ===================== -->
 
