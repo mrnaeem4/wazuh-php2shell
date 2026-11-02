@@ -1,0 +1,64 @@
+<!--
+  Exclude the Wazuh's original 0375-web-accesslog_decoders.xml in ossec.conf.
+  Extract more data with this decoders
+-->
+
+<decoder name="web-accesslog">
+    <type>web-log</type>
+    <program_name>nginx|apache</program_name>
+</decoder>
+
+<decoder name="web-accesslog">
+    <type>web-log</type>
+    <prematch>^\S+ \S+ \S+ \.*[\S+ \S\d+] "\w+ \S+ HTTP\S+" </prematch>
+</decoder>
+
+<decoder name="web-accesslog-other">
+    <type>web-log</type>
+    <prematch>^\S+ \S+ \S+ \.*[\S+ \S\d+]  "\w+ \S+ HTTP\S+" </prematch>
+</decoder>
+
+<decoder name="web-accesslog-domain">
+    <type>web-log</type>
+    <parent>web-accesslog</parent>
+    <prematch>^\S+.\D+</prematch>
+    <regex>^\S+ (\S+) \S+ \.*[\S+ \S\d+] "(\w+) (\S+) HTTP\S+" (\d+) </regex>
+    <order>srcip, protocol, url, response_code</order>
+</decoder>
+
+<!--
+Extract web access log with request params
+
+WARNING: This will break your rules if you used <url> for detects payload in url params. You must replace it with <field name="params"></field> or use <regex></regex> instead.
+Disable this decoder if you don't want to extract request params.
+
+82.223.36.249 - - [06/Jul/2026:10:43:27 +0700] "GET /?q=slot-gacor HTTP/1.1" 404 146 "-" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Mobile/15E148 Safari/604.1"
+-->
+<decoder name="web-accesslog-params">
+    <type>web-log</type>
+    <parent>web-accesslog</parent>
+    <prematch>^\S+ \S+ \S+ \.*[\S+ \S\d+] "\w+ \S+?\S+ HTTP\S+" \d+ \S+ "\.+" "\.+"</prematch>
+    <regex>^(\S+) \S+ \S+ \.*[\S+ \S\d+] "(\w+) (\S+)?(\S+) (HTTP\S+)" (\d+) (\S+) "(\.+)" "(\.+)"</regex>
+    <order>srcip, method, url, params, http_version, response_code, response_size, referrer, user_agent</order>
+</decoder>
+
+<!-- 
+Extract web access log without request params
+
+82.223.36.249 - - [06/Jul/2026:10:43:27 +0700] "POST /vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php HTTP/1.1" 200 146 "-" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Mobile/15E148 Safari/604.1"
+-->
+<decoder name="web-accesslog">
+    <type>web-log</type>
+    <parent>web-accesslog</parent>
+    <prematch>^\S+ \S+ \S+ \.*[\S+ \S\d+] "\w+ \S+ HTTP\S+" \d+ \S+ "\.+" "\.+"</prematch>
+    <regex>^(\S+) \S+ \S+ \.*[\S+ \S\d+] "(\w+) (\S+) (HTTP\S+)" (\d+) (\S+) "(\.+)" "(\.+)"</regex>
+    <order>srcip, method, url, http_version, response_code, response_size, referrer, user_agent</order>
+</decoder>
+
+<decoder name="web-accesslog-glpi">
+    <type>web-log</type>
+    <parent>web-accesslog</parent>
+    <prematch>^\S+ - - [\d+/\w+/\d+:\d+:\d+:\d+ +\d+] "\S+ \S+ HTTP/\.+"</prematch>
+    <regex>^(\S+) - - [(\d+/\w+/\d+:\d+:\d+:\d+) +\d+] "(\S+) (\S+) HTTP/(\.+)" (\d+) (\S+) "(\.+)" "(\.+)"</regex>
+    <order>srcip,timestamp,operation, route, http_version, response_code, rsize, url, browser</order>
+</decoder>

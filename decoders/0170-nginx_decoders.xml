@@ -1,0 +1,48 @@
+<!--
+  Exclude the Wazuh's original 0170-nginx_decoders.xml in ossec.conf.
+  Extract more data with this decoders
+-->
+<decoder name="nginx-errorlog-modsec">
+  <prematch>^20\d\d/\d\d/\d\d \d\d:\d\d:\d\d [error] \S+ \S+ [client \S+] ModSecurity:</prematch>
+</decoder>
+
+<!--
+  - Will extract the srcip.
+  - Examples:
+  - 2009/09/15 20:55:40 [error] 63858#0: *3663 open() "/srv/www/ossec.net/robots.txt" failed (2: No such file or directory), client: 1.2.3.4, server: ossec.net, request: "GET /robots.txt HTTP/1.1", host: "www.ossec.net"
+  - 2009/09/15 19:51:07 [error] 37992#0: accept() failed (53: Software caused connection abort)
+  -->
+<decoder name="nginx-errorlog">
+  <prematch>^20\d\d/\d\d/\d\d \d\d:\d\d:\d\d [</prematch>
+</decoder>
+
+<!--
+Extract NAXSI WAF alert information https://github.com/nbs-system/naxsi/wiki/naxsilogs
+
+2013/11/10 07:36:19 [error] 8278#0: *5932 NAXSI_FMT: ip=X.X.X.X&server=Y.Y.Y.Y&uri=/phpMyAdmin-2.8.2/scripts/setup.php&learning=0&vers=0.52&total_processed=472&total_blocked=204&block=0&cscore0=$UWA&score0=8&zone0=HEADERS&id0=42000227&var_name0=user-agent, client: X.X.X.X, server: blog.memze.ro, request: "GET /phpMyAdmin-2.8.2/scripts/setup.php HTTP/1.1", host: "X.X.X.X"
+-->
+<decoder name="nginx-naxsi">
+  <parent>nginx-errorlog</parent>
+  <prematch offset="after_parent">NAXSI_FMT:</prematch>
+  <regex offset="after_parent">ip=(\S+)&server=(\S+)&uri=(\S+)&learning=(\d+)&vers=(\S+)&total_processed=(\d+)&total_blocked=(\d+)&block=(\d+)&cscore0=(\S+)&score0=(\S+)&</regex>
+  <order>srcip,server,uri,learning,vers,total_processed,total_blocked,block,attack,score</order>
+</decoder>
+
+<!-- 
+2026/06/24 17:20:02 [error] 1941790#0: *20660 recv() failed (104: Connection reset by peer) while reading response header from upstream, client: 114.10.71.40, server: domain.com, request: "POST /path/to/endpoint HTTP/1.1", upstream: "fastcgi://unix:/run/php-fpm.sock:", host: "domain.com"
+-->
+<decoder name="nginx-errorlog-ip">
+  <parent>nginx-errorlog</parent>
+  <prematch offset="after_parent">, client: \S+, server: \S*, request: "\S+ </prematch>
+  <regex offset="after_parent">, client: (\S+), server: (\S+), request: "(\S+) (\S+) HTTP\S+", upstream: "(\S+)", host: "(\S+)"</regex>
+  <order>srcip,server,method,url,upstream,host</order>
+</decoder>
+
+<!-- 
+2026/07/27 06:37:45 [error] 1574#0: *2575779 [client 51.195.39.150] ModSecurity: Access denied with code 403 (phase 2). Matched "Operator `Ge' with parameter `5' against variable `TX:ANOMALY_SCORE' (Value: `5' ) [file "/usr/local/nginx/conf/owasp-crs/rules/REQUEST-949-BLOCKING-EVALUATION.conf"] [line "80"] [id "949110"] [rev ""] [msg "Inbound Anomaly Score Exceeded (Total Score: 5)"] [data ""] [severity "2"] [ver "OWASP_CRS/3.2.0"] [maturity "0"] [accuracy "0"] [tag "application-multi"] [tag "language-multi"] [tag "platform-multi"] [tag "attack-generic"] [hostname "lab1"] [uri "/wp-json/batch/v1"] [unique_id "178510906540.525785"] [ref ""], client: 51.195.39.150, server: domain.com, request: "POST /wp-json/batch/v1 HTTP/1.1", host: "domain.com"
+-->
+<decoder name="nginx-error-modsec">
+  <parent>nginx-errorlog-modsec</parent>
+  <regex offset="after_parent" type="pcre2"> \[file "[^"]*"\] \[line "\d+"\] \[id "(\d+)"\] \[rev "[^"]*"\] \[msg "([^"]+)"\] \[data "[^"]*"\] \[severity "(\d+)"\] \[ver "([^"]*)"\] \[maturity "\d+"\] \[accuracy "\d+"\] ((?:\[tag "([^"]+)"\] )*)?\[hostname "[^"]*"\] \[uri "[^"]*"\] \[unique_id "[^"]*"\] \[ref "[^"]*"\], client: (\S+), server: (\S+), request: "(\S+) (\S+) (\S+)", host: "(\S+)"</regex>
+  <order>rule_id,message,severity,modsec_version,tag,srcip,server,method,url,http_version,host</order>
+</decoder>

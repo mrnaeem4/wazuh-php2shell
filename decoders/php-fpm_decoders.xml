@@ -1,0 +1,14 @@
+<!--
+[27-Oct-2026 04:12:07] WARNING: [pool www] child 4321 said into stderr: "NOTICE: PHP message: PHP Warning:  POST Content-Length of 134217728 bytes exceeds the limit of 8388608 bytes in Unknown on line 0"
+[27-Oct-2026 04:12:07] WARNING: [pool www] child 4321 said into stderr: "NOTICE: PHP message: PHP Warning:  Unknown: Multipart body parts limit exceeded 1000. in Unknown on line 0"
+-->
+<decoder name="php-fpm">
+    <prematch>[\d\d-\w+-\d\d\d\d \d\d:\d\d:\d\d] WARNING: [pool </prematch>
+</decoder>
+
+<decoder name="php-fpm-warning-details">
+  <parent>php-fpm</parent>
+  <prematch offset="after_parent">\S+] child \d+ said into stderr: "NOTICE: PHP message: PHP Warning:  \.+"</prematch>
+  <regex offset="after_parent">(\S+)] child (\d+) said into stderr: "NOTICE: PHP message: PHP Warning:  (\.+)"</regex>
+  <order>php_pool,child_id,php_warning_message</order>
+</decoder>
