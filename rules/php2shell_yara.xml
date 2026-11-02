@@ -1,0 +1,122 @@
+<!--
+  Integrasi YARA untuk PHP2Shell.
+  Konsep: FIM mendeteksi file PHP baru/berubah di web root (rule 111054/111055),
+  lalu active response `yara_linux` menjalankan yara.sh untuk memindai file tersebut.
+  Hasil pemindaian masuk ke active-responses.log, dibaca decoder `yara_decoder`
+  dan dipicu rule 108001.
+
+  Deploy:
+    - decoders  -> /var/ossec/etc/decoders/ (Wazuh manager)
+    - rules     -> /var/ossec/etc/rules/    (Wazuh manager)
+    - command   -> blok <command> di /var/ossec/etc/ossec.conf (Wazuh manager)
+-->
+
+<!-- ===================== Decoders (manager) ===================== -->
+<decoder name="yara_decoder">
+  <prematch>wazuh-yara:</prematch>
+</decoder>
+
+<decoder name="yara_decoder1">
+  <parent>yara_decoder</parent>
+  <regex>wazuh-yara: (\S+) \- Scan result: (\S+) (\S+)</regex>
+  <order>log_type, yara_rule, yara_scanned_file</order>
+</decoder>
+
+<!-- ===================== Rules (manager) ===================== -->
+
+<!-- Rule FIM yang memicu scan pada web root (lihat rules/111-php2shell_rules.xml) -->
+<group name="syscheck,php2shell,yara_trigger,">
+
+  <rule id="111060" level="0">
+    <if_sid>554</if_sid>
+    <field name="file" type="pcre2">(?i)^(?:/var/www|/srv/www|/usr/share/nginx/html|/usr/local/www|/opt/lampp/htdocs)/.+\.(?:php[0-9]?|phtml|phar|pht|phps)$</field>
+    <description>PHP2Shell/YARA: new PHP file in the web root, trigger YARA scan (no alert).</description>
+    <group>yara_trigger,</group>
+  </rule>
+
+  <rule id="111061" level="0">
+    <if_sid>550</if_sid>
+    <field name="file" type="pcre2">(?i)^(?:/var/www|/srv/www|/usr/share/nginx/html|/usr/local/www|/opt/lampp/htdocs)/.+\.(?:php[0-9]?|phtml|phar|pht|phps)$</field>
+    <description>PHP2Shell/YARA: PHP file modified in the web root, trigger YARA scan (no alert).</description>
+    <group>yara_trigger,</group>
+  </rule>
+
+  <!-- Direktori uji integrasi YARA (bawaan dokumentasi Wazuh) -->
+  <rule id="111062" level="0">
+    <if_sid>550,554</if_sid>
+    <field name="file">/tmp/yara/malware/</field>
+    <description>YARA: test directory event, trigger YARA scan (no alert).</description>
+    <group>yara_trigger,</group>
+  </rule>
+</group>
+
+<group name="yara,malware,php2shell,">
+
+  <rule id="108000" level="0">
+    <decoded_as>yara_decoder</decoded_as>
+    <description>Yara grouping rule</description>
+  </rule>
+
+  <rule id="108001" level="12">
+    <if_sid>108000</if_sid>
+    <match>wazuh-yara: INFO - Scan result: </match>
+    <description>File "$(yara_scanned_file)" is a positive match. Yara rule: $(yara_rule)</description>
+    <mitre>
+      <id>T1505.003</id>
+    </mitre>
+    <group>yara_malware,</group>
+  </rule>
+
+  <!-- Match YARA pada file di web root: indikasi webshell yang ter-upload -->
+  <rule id="111070" level="14">
+    <if_sid>108001</if_sid>
+    <field name="yara_scanned_file" type="pcre2">(?i)^(?:/var/www|/srv/www|/usr/share/nginx/html|/usr/local/www|/opt/lampp/htdocs)/</field>
+    <description>PHP2Shell/YARA: webshell family signature matched on a file in the web root. Yara rule: $(yara_rule)</description>
+    <mitre>
+      <id>T1505.003</id>
+      <id>T1190</id>
+    </mitre>
+    <group>php2shell_webshell,yara_malware,</group>
+  </rule>
+
+  <rule id="111071" level="8">
+    <if_sid>108000</if_sid>
+    <match>wazuh-yara: INFO - Scan result: </match>
+    <description>PHP2Shell/YARA: file scanned outside the web root matched a Yara rule. Rule: $(yara_rule)</description>
+    <mitre>
+      <id>T1505.003</id>
+    </mitre>
+    <group>yara_match,</group>
+  </rule>
+</group>
+
+<group name="yara,php2shell_multiple,">
+  <rule id="111072" level="15" frequency="3" timeframe="600">
+    <if_matched_group>yara_malware</if_matched_group>
+    <different_location />
+    <description>PHP2Shell/YARA: three or more malware signature matches on the endpoint in 10m.</description>
+    <mitre>
+      <id>T1505.003</id>
+    </mitre>
+    <group>php2shell_webshell_multiple,</group>
+  </rule>
+</group>
+
+<!--
+  ===================== Command (manager) =====================
+  Tambahkan di dalam <ossec_config> pada /var/ossec/etc/ossec.conf:
+
+  <command>
+    <name>yara_linux</name>
+    <executable>yara.sh</executable>
+    <extra_args>-yara_path /usr/local/bin -yara_rules /tmp/yara/rules/yara_rules.yar</extra_args>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+
+  <active-response>
+    <disabled>no</disabled>
+    <command>yara_linux</command>
+    <location>local</location>
+    <rules_id>111054,111055,111060,111061,111062</rules_id>
+  </active-response>
+-->
