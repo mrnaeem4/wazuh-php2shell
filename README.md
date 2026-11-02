@@ -191,6 +191,98 @@ sudo /var/ossec/bin/wazuh-logtest -q < log_samples/auditd.log
 
 Hasil yang diharapkan muncul misalnya `PHP2Shell: scanner user agent seen on the web server` (rule 111000).
 
+## Active Response: `firewall-drop`
+
+Rule PHP2Shell yang terpicu secara otomatis memicu **active response** `firewall-drop`, sehingga IP
+penyerang diblokir pada firewall host selama durasi tertentu.
+
+### Group Pemicu
+
+| Group Rule | Contoh Rule | Efek |
+| --- | --- | --- |
+| `php2shell_recon` | 111000, 111001, 111002, 111003, 111100 | IP scanner yang melakukan reconnaissance diblokir |
+| `php2shell_http` | 111002, 111003, 111004, 111105 | IP pengirim request berbahaya (LFI, log poisoning) diblokir |
+| `modsecurity` | 111040, 111041, 100002, 100004, 100005 | IP yang ditolak ModSecurity / Nginx diblokir |
+
+> `firewall-drop` membutuhkan `srcip`, sehingga hanya rule dengan source IP yang dapat memicu.
+> Rule berbasis kernel/auditd (`php2shell_crash_signal`, `php2shell_post_exploit`) tidak dapat
+> memicu `firewall-drop` karena tidak membawa IP sumber.
+
+### Prasyarat pada Agent
+
+- Paket `iptables` tersedia (atau `nftables` jika konfigurasi Wazuh disesuaikan).
+- Script active response bawaan `firewall-drop` ada di `/var/ossec/active-response/bin/firewall-drop`.
+- Agent berjalan sebagai root agar dapat menulis rule iptables.
+
+### Konfigurasi Agent (`/var/ossec/etc/ossec.conf`)
+
+```xml
+<active-response>
+  <command>firewall-drop</command>
+  <location>local</location>
+  <rules_group>php2shell_recon|php2shell_http|modsecurity</rules_group>
+  <timeout>1800</timeout>
+</active-response>
+```
+
+Keterangan:
+
+| Field | Nilai | Keterangan |
+| --- | --- | --- |
+| `command` | `firewall-drop` | Nama command active response |
+| `location` | `local` | Blokir pada host agent yang menerima event |
+| `rules_group` | `php2shell_recon\|php2shell_http\|modsecurity` | Group dipisah `\|` (OR) |
+| `timeout` | `1800` | Durasi blokir dalam detik (30 menit) |
+
+### Konfigurasi Alternatif: per Rule ID
+
+Jika ingin hanya rule tertentu yang memblokir, gunakan `<rules_id>`:
+
+```xml
+<active-response>
+  <command>firewall-drop</command>
+  <location>local</location>
+  <rules_id>111000,111002,111004,111105,100004</rules_id>
+  <timeout>1800</timeout>
+</active-response>
+```
+
+### Konfigurasi Terpusat dari Manager (`agent.conf`)
+
+Agar berlaku untuk semua agent dalam group, letakkan pada `/var/ossec/etc/shared/<group>/agent.conf`:
+
+```xml
+<agent_config>
+  <active-response>
+    <command>firewall-drop</command>
+    <location>local</location>
+    <rules_group>php2shell_recon|php2shell_http|modsecurity</rules_group>
+    <timeout>1800</timeout>
+  </active-response>
+</agent_config>
+```
+
+### Verifikasi
+
+```bash
+# pada agent: pastikan rule iptables terbentuk setelah simulasi rule
+sudo iptables -L -n | grep DROP
+
+# pada manager: pastikan active response tercatat
+sudo tail -f /var/ossec/logs/active-responses.log
+```
+
+Setelah `timeout` habis, `firewall-drop` menghapus blokir secara otomatis.
+
+### Catatan Keamanan
+
+- **Whitelist IP internal** (load balancer, monitoring, reverse proxy) di
+  `/var/ossec/etc/lists/` atau dengan rule level `0` untuk menghindari self-block.
+- Blokir pada `location local` hanya melindungi host tersebut. Untuk memblokir di satu titik masuk,
+  gunakan `location server` pada manager dengan skenario `firewall-drop` terpusat.
+- `modsecurity` mencakup rule level rendah (100002 level 5, 100006 level 6); pastikan threshold
+  tidak memblokir pengguna sah akibat false positive (atur `rules_id` bila perlu).
+
 ## Troubleshooting
 
 | Gejala | Solusi |
@@ -200,6 +292,7 @@ Hasil yang diharapkan muncul misalnya `PHP2Shell: scanner user agent seen on the
 | Rule auditd tidak terpicu | Pastikan `auditd` aktif, key `php2shell_exec` ter-load, dan log audit dikumpulkan agent |
 | FIM tidak melapor | Pastikan `/var/www` ada di `<syscheck><directories>` |
 | SCA tidak muncul | Cek status di dashboard, pastikan policy berada di folder `shared` group agent |
+| Active response tidak memblokir | Cek `iptables` tersedia, agent berjalan sebagai root, dan `rules_group` tertulis benar |
 
 ## Lisensi
 
