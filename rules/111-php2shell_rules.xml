@@ -274,7 +274,7 @@
     </rule>
 </group>
 
-<group name="web,attack,rce,php2shell,php2shell_multiple">
+<group name="web,attack,rce,php2shell,php2shell_multiple,">
 
     <rule id="111100" level="10" frequency="5" timeframe="30">
         <if_matched_group>php2shell_recon</if_matched_group>
